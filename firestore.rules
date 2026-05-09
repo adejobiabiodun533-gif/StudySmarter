@@ -1,0 +1,85 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // User Profile Rules
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.uid == request.auth.uid 
+          && data.email is string && data.email.size() > 0 && data.email.size() <= 200
+          && data.displayName is string && data.displayName.size() <= 100;
+      }
+
+      allow get: if isOwner(userId);
+      allow create: if isVerified() && isOwner(userId) 
+        && isValidUser(incoming())
+        && incoming().createdAt == request.time;
+      allow update: if isVerified() && isOwner(userId) 
+        && isValidUser(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email']);
+    }
+
+    // Study Material Rules
+    match /materials/{materialId} {
+      function isValidMaterial(data) {
+        return data.userId == request.auth.uid
+          && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+          && data.rawContent is string && data.rawContent.size() <= 500000;
+      }
+
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      allow create: if isVerified() 
+        && isValidId(materialId)
+        && isValidMaterial(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+        
+      allow update: if isVerified() 
+        && existing().userId == request.auth.uid
+        && isValidMaterial(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Rename or Update Content
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'category', 'rawContent', 'updatedAt']) ||
+          // Action: AI Analysis Result
+          incoming().diff(existing()).affectedKeys().hasOnly(['summary', 'topics', 'mnemonics', 'practiceQuestions', 'updatedAt'])
+        );
+        
+      allow delete: if isVerified() && resource.data.userId == request.auth.uid;
+    }
+  }
+}
